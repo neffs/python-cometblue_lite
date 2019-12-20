@@ -19,20 +19,16 @@ _LOGGER = logging.getLogger(__name__)
 _LOGGER.setLevel(10)
 
 COMETBLUE_SERVICE = "47E9EE00-47E9-11E4-8939-164230D1DF67"
-PASSWORD_HANDLE = 0x47
 PASSWORD_CHAR = "47e9ee30-47e9-11e4-8939-164230d1df67"
-TEMPERATURE_HANDLE = 0x3f
 TEMPERATURE_CHAR = "47e9ee2b-47e9-11e4-8939-164230d1df67"
-STATUS_HANDLE = 0x3d
+BATTERY_CHAR = "47e9ee2c-47e9-11e4-8939-164230d1df67"
 STATUS_CHAR = "47e9ee2a-47e9-11e4-8939-164230d1df67"
-DATETIME_HANDLE = 0x001d
 DATETIME_CHAR = "47e9ee01-47e9-11e4-8939-164230d1df67"
 MODEL_CHAR = "47e9ee2d-47e9-11e4-8939-164230d1df67"
 _TEMPERATURES_STRUCT_PACKING = '<bbbbbbb'
 _PIN_STRUCT_PACKING = '<I'
 _STATUS_STRUCT_PACKING = '<BBB'
 _DATETIME_STRUCT_PACKING = '<BBBBB'
-_BATTERY_STRUCT_PACKING = '<B'
 _DAY_STRUCT_PACKING = '<BBBBBBBB'
 
 _STATUS_BITMASKS = {
@@ -58,6 +54,7 @@ class CometBlue(object):
         self._pin = pin
         self._manual_temp = None
         self._cur_temp = None
+        self._batt_level = None
         self._temperature = None
         self.available = False
         self._new_status = dict()
@@ -89,8 +86,9 @@ class CometBlue(object):
         try:
             self._conn.writeCharacteristic(self._handles[PASSWORD_CHAR], struct.pack(_PIN_STRUCT_PACKING, self._pin), withResponse=True)
         except:
-            _LOGGER.debug("could not write pin %s", self._address)
-            raise
+            _LOGGER.info("could not write provided pin, trying 000000 %s", self._address)
+            self._conn.writeCharacteristic(self._handles[PASSWORD_CHAR], struct.pack(_PIN_STRUCT_PACKING, 0), withResponse=True)
+            
 
     def disconnect(self):
         """Disconnect from thermostat"""
@@ -117,6 +115,10 @@ class CometBlue(object):
     @property
     def model(self):
         return self._model
+
+    @property
+    def battery_level(self):
+        return self._batt_level
     
     @property
     def manual_mode(self):
@@ -141,7 +143,11 @@ class CometBlue(object):
             data = self._conn.readCharacteristic(self._handles[STATUS_CHAR])
             self._status = CometBlue._decode_status(data)
             _LOGGER.debug("Status: %s", self._status)
-            
+            bat_data = self._conn.readCharacteristic(self._handles[BATTERY_CHAR])
+            self._batt_level = ord(bat_data)
+            if self._batt_level:
+                _LOGGER.debug("Updating Battery level for device %s to %d", self._address, self._batt_level)
+
             if self._temperature:
                 _LOGGER.debug("Updating Temperature for device %s to %d", self._address, self._temperature)
                 self.write_temperature()
@@ -149,7 +155,7 @@ class CometBlue(object):
                 _LOGGER.debug("Updating Status for device %s", self._address)
                 self.write_status()
             self.available = True
-            
+
         except btle.BTLEGattError:
             _LOGGER.error("Can't read cometblue data (%s). Did you set the correct PIN?", self._address)
             self.available = False
@@ -162,7 +168,6 @@ class CometBlue(object):
             self.disconnect()
             _LOGGER.debug("Disconnected from device %s", self._address)
 
- 
     @manual_temperature.setter
     def manual_temperature(self, temperature):
         """Set manual temperature. Call update() afterwards"""
