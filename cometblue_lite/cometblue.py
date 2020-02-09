@@ -137,7 +137,13 @@ class CometBlue(object):
         _LOGGER.debug("Disconnected from device %s", self._address)
 
     def should_update(self):
-        return self._temperature is not None or len(self._new_status) > 0
+        """
+        Signal necessity to call update() on next cycle because values need
+        to be updated or last update was unsuccessfull.
+        """
+        return (not self.available
+                or self._temperature is not None
+                or len(self._new_status) > 0)
 
     @property
     def manual_temperature(self):
@@ -169,12 +175,18 @@ class CometBlue(object):
             return None
 
     def update(self):
-        """Communicate with device"""
+        """Communicate with device, first try to write new values, then read from device"""
         try:
             self.connect()
 
             if self._model is None:
                 self._model = str(self._conn.readCharacteristic(self._handles[MODEL_CHAR]))
+
+            if self._temperature is not None:
+                self.write_temperature()
+
+            if len(self._new_status) > 0:
+                self.write_status()
 
             data = self._conn.readCharacteristic(self._handles[TEMPERATURE_CHAR])
             self._cur_temp, self._manual_temp, _, _, _, _, _ = struct.unpack(_TEMPERATURES_STRUCT_PACKING, data)
@@ -184,14 +196,6 @@ class CometBlue(object):
             if self._status != decoded_status:
                 self._status = decoded_status
                 _LOGGER.debug("Status: %s", self._status)
-
-            if self._temperature:
-                _LOGGER.debug("Updating Temperature for device %s to %.f", self._address, self._temperature)
-                self.write_temperature()
-
-            if len(self._new_status) > 0:
-                _LOGGER.debug("Updating Status for device %s", self._address)
-                self.write_status()
 
             bat_data = ord(self._conn.readCharacteristic(self._handles[BATTERY_CHAR]))
             if self._batt_level != bat_data:
@@ -220,13 +224,28 @@ class CometBlue(object):
         self._new_status['manual_mode'] = mode
 
     def write_temperature(self):
-        self._manual_temp = int(self._temperature * 2.0)
+        def f_to_int(val):
+            """Must be value * 2 to change and -128 otherwise"""
+            return -128 if val is None else int(val * 2.0)
+
+        _LOGGER.debug("Updating Temperatures for device {} to manual_temp={}"
+                      .format(self._address, f_to_int(self._temperature)))
         data = struct.pack(
             _TEMPERATURES_STRUCT_PACKING,
-            -128, self._manual_temp,
-            -128, -128, -128, -128, -128)
-        self._conn.writeCharacteristic(self._handles[TEMPERATURE_CHAR], data)
-        self._temperature = None
+            -128,  # current temp
+            f_to_int(self._temperature),
+            -128,  # target_temp_l
+            -128,  # target_temp_h
+            -128,  # offset_temp
+            -128,  # window_open_detection
+            -128,  # window_open_minutes
+        )
+        try:
+            self._conn.writeCharacteristic(self._handles[TEMPERATURE_CHAR], data, withResponse=True)
+        except btle.BTLEException as exc:
+            _LOGGER.debug("Can't write cometblue (%s) temperature data.", self._address, exc_info=exc)
+        else:
+            self._temperature = None
 
     def write_status(self):
         status = self._status.copy()
@@ -234,6 +253,9 @@ class CometBlue(object):
         _LOGGER.debug("Updating Status for device {} to {}".format(self._address, status))
 
         data = _encode_status(status)
-        self._conn.writeCharacteristic(self._handles[STATUS_CHAR], data)
-        self._status = status
-        self._new_status = dict()
+        try:
+            self._conn.writeCharacteristic(self._handles[STATUS_CHAR], data, withResponse=True)
+        except btle.BTLEException as exc:
+            _LOGGER.debug("Can't write cometblue status data (%s).", self._address, exc_info=exc)
+        else:
+            self._new_status = dict()
