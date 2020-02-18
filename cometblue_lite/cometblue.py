@@ -13,13 +13,15 @@ from bluepy import btle
 
 _LOGGER = logging.getLogger(__name__)
 
-COMETBLUE_SERVICE = "47E9EE00-47E9-11E4-8939-164230D1DF67"
 PASSWORD_CHAR = "47e9ee30-47e9-11e4-8939-164230d1df67"
 TEMPERATURE_CHAR = "47e9ee2b-47e9-11e4-8939-164230d1df67"
 BATTERY_CHAR = "47e9ee2c-47e9-11e4-8939-164230d1df67"
 STATUS_CHAR = "47e9ee2a-47e9-11e4-8939-164230d1df67"
 DATETIME_CHAR = "47e9ee01-47e9-11e4-8939-164230d1df67"
-MODEL_CHAR = "47e9ee2d-47e9-11e4-8939-164230d1df67"
+SOFTWARE_REV = "00002a28-0000-1000-8000-00805f9b34fb"       # software_revision (0.0.6-sygonix1)
+MODEL_CHAR = "00002a24-0000-1000-8000-00805f9b34fb"         # model_number (Comet Blue)
+MANUFACTURER_CHAR = "00002a29-0000-1000-8000-00805f9b34fb"  # manufacturer_name (EUROtronic GmbH)
+FIRMWARE_CHAR = "47e9ee2d-47e9-11e4-8939-164230d1df67"      # firmware_revision2 (COBL0126)
 _PIN_STRUCT_PACKING = '<I'
 _DATETIME_STRUCT_PACKING = '<BBBBB'
 _DAY_STRUCT_PACKING = '<BBBBBBBB'
@@ -238,8 +240,7 @@ class CometBlue:
         if len(self._handles) == 0:
             _LOGGER.debug("Discovering characteristics %s", self._address)
             try:
-                service = self._conn.getServiceByUUID(COMETBLUE_SERVICE)
-                chars = service.getCharacteristics()
+                chars = self._conn.getCharacteristics()
                 self._handles = {str(a.uuid): a.getHandle() for a in chars}
             except btle.BTLEException as exc:
                 _LOGGER.debug("Could not discover characteristics %s", self._address, exc_info=exc)
@@ -269,6 +270,11 @@ class CometBlue:
                 or self._target.status is not None)
 
     @property
+    def firmware_rev(self):
+        """Return firmware revision (e.g. COBL0126)"""
+        return self._current.firmware_rev
+
+    @property
     def locked(self):
         """Return True if device is in child lock"""
         return self._current.locked
@@ -279,9 +285,19 @@ class CometBlue:
         return self._current.low_battery
 
     @property
+    def manufacturer(self):
+        """Return manufacturer name (e.g. EUROtronic GmbH)"""
+        return self._current.manufacturer
+
+    @property
     def model(self):
         """Return model (e.g. Comet Blue)"""
         return self._current.model
+
+    @property
+    def software_rev(self):
+        """Return software revision (e.g. 0.0.6-sygonix1)"""
+        return self._current.software_rev
 
     @property
     def status(self):
@@ -336,8 +352,17 @@ class CometBlue:
         try:
             self.connect()
 
-            if current.model is None:
+            device_infos = [
+                current.model,
+                current.firmware_rev,
+                current.manufacturer,
+                current.software_rev
+            ]
+            if None in device_infos:
                 current.model = str(self._conn.readCharacteristic(self._handles[MODEL_CHAR]))
+                current.firmware_rev = str(self._conn.readCharacteristic(self._handles[FIRMWARE_CHAR]))
+                current.manufacturer = str(self._conn.readCharacteristic(self._handles[MANUFACTURER_CHAR]))
+                current.software_rev = str(self._conn.readCharacteristic(self._handles[SOFTWARE_REV]))
 
             if target.target_temperature is not None:
                 self._conn.writeCharacteristic(self._handles[TEMPERATURE_CHAR], target.temperatures,

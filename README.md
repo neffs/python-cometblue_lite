@@ -21,6 +21,6 @@ Battery Level | :heavy_check_mark: | :heavy_minus_sign:
 Low Battery | :heavy_check_mark: | :heavy_minus_sign:
 Window Open Indicator | :heavy_multiplication_x: | :heavy_minus_sign:
 Model | :heavy_check_mark: | :heavy_minus_sign:
-Manufacturer Name | :heavy_multiplication_x: | :heavy_minus_sign:
-Firmware Rev. | :heavy_multiplication_x: | :heavy_minus_sign:
-Software Rev. | :heavy_multiplication_x: | :heavy_minus_sign: 
+Manufacturer Name | :heavy_check_mark: | :heavy_minus_sign:
+Firmware Rev. | :heavy_check_mark: | :heavy_minus_sign:
+Software Rev. | :heavy_check_mark: | :heavy_minus_sign: 
