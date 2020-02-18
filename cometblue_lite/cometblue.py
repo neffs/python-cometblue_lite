@@ -43,6 +43,7 @@ def _encode_datetime(dt):
 
 class CometBlueStates:
     """CometBlue Thermostat States"""
+    TEMPERATURE_OFF = 7.5   # special temperature, valve fully closed
     _TEMPERATURES_STRUCT_PACKING = '<bbbbbbb'
     _STATUS_STRUCT_PACKING = '<BBB'
 
@@ -60,6 +61,7 @@ class CometBlueStates:
     }
 
     def __init__(self):
+        self.is_off = False
         self.firmware_rev = None
         self.manufacturer = None
         self.model = None
@@ -203,10 +205,16 @@ class CometBlueStates:
     def temperatures(self, value):
         temps = struct.unpack(CometBlueStates._TEMPERATURES_STRUCT_PACKING, value)
         current_temp, manual_temp, target_low, target_high, offset_temp, window_open_detect, window_open_minutes = temps
+
+        # preserve current "target_temperature" when TEMPERATURE_OFF is active
+        if manual_temp != -128:
+          if manual_temp / 2.0 == CometBlueStates.TEMPERATURE_OFF:
+              self.is_off = True
+          else:
+              self.is_off = False
+              self.target_temperature = manual_temp / 2.0
         if current_temp != -128:
             self._current_temp = current_temp / 2.0
-        if manual_temp != -128:
-            self.target_temperature = manual_temp / 2.0
         if target_low != -128:
             self.target_temp_l = target_low / 2.0
         if target_high != -128:
@@ -322,6 +330,25 @@ class CometBlue:
         return self._current.firmware_rev
 
     @property
+    def is_off(self):
+        return self._current.is_off
+
+    @is_off.setter
+    def is_off(self, value):
+        """Set device in special 'off' mode.
+            value: True to set 'Mode: manual, Target temperature: 7.5', False to set last
+                known target temperature, else to high temp., Mode is not changed.
+        """
+        if value:
+            self._target.manual_mode = True
+            self._target.target_temperature = CometBlueStates.TEMPERATURE_OFF
+        else:
+            if self._current.target_temperature is not None:
+                self._target.target_temperature = self._current.target_temperature
+            else:
+                self._target.target_temperature = self._current.target_temp_h
+
+    @property
     def locked(self):
         """Return True if device is in child lock"""
         return self._current.locked
@@ -367,7 +394,10 @@ class CometBlue:
     @target_temperature.setter
     def target_temperature(self, temperature):
         """Set manual temperature. Call update() afterwards"""
-        self._target.target_temperature = temperature
+        if self.is_off:
+            self._current.target_temperature = temperature
+        else:
+            self._target.target_temperature = temperature
 
     @property
     def current_temperature(self):
