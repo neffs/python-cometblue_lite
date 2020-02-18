@@ -2,12 +2,14 @@
 A very basic module for Eurotronic CometBlue thermostats.
 They are identical to the Sygonix, Xavax Bluetooth thermostats
 
-This version is based on the bluepy module. 
+This version is based on the bluepy module.
 Currently only current and target temperature in manual mode is supported, nothing else.
 Parts were taken from the cometblue module by im-0
 """
 import logging
 import struct
+import time
+from contextlib import contextmanager
 
 from bluepy import btle
 
@@ -216,49 +218,85 @@ class CometBlue:
     def __init__(self, address, pin):
         super(CometBlue, self).__init__()
         self._address = address
-        self._conn = btle.Peripheral()
         self._pin = pin
         self.available = False
         self._handles = dict()
         self._current = CometBlueStates()
         self._target = CometBlueStates()
+        # btle.Debugging = True
 
-    def connect(self):
-        """Connect to thermostat and send PIN"""
-        _LOGGER.debug("Connecting to device %s", self._address)
+    @contextmanager
+    def btle_connection(self):
+        """Contextmanager to handle a bluetooth connection to Comet Blue device.
+        Any problem that arises when using the connection, will be handled,
+        the connection closed and any resources aquired released.
+        Debug logging for analysis is integrated, the errors are raised to be
+        handled by the user.
 
+        The following aspects are managed:
+        * Connect handles setup, preparations for read/write and authentication.
+        * Read/Write error handling.
+        * Disconnect handles proper releasing of any aquired resources.
+        """
+        conn = self._connect()
+        self.available = True
         try:
-            self._conn.connect(self._address)
-        except btle.BTLEException as exc:
-            _LOGGER.debug("Unable to connect to the device %s, retrying.", self._address, exc_info=exc)
+            yield conn
+        except btle.BTLEException as ex:
+            _LOGGER.debug("Couldn't read/write cometblue data for device %s:\n%s", self._address, ex)
+            self.available = False
+            raise
+        except BrokenPipeError as ex:
+            _LOGGER.debug("Device %s BrokenPipeError: %s", self._address, ex)
+            self.available = False
+            raise btle.BTLEDisconnectError() from ex
+        finally:
+            self._disconnect(conn)
+
+    def _connect(self):
+        """Connect to thermostat and send PIN"""
+        conn = btle.Peripheral()
+        _LOGGER.debug("Connecting to device %s", self._address)
+        try:
+            conn.connect(self._address)
+        except btle.BTLEException as ex:
+            _LOGGER.debug("Couldn't establish connection with %s, retrying:\n%s", self._address, ex)
+            time.sleep(2)
             try:
-                self._conn.connect(self._address)
-            except btle.BTLEException as exc:
-                _LOGGER.debug("Second connection try to %s failed.", self._address, exc_info=exc)
+                conn.connect(self._address)
+            except Exception as ex:
+                _LOGGER.debug("Connecting to device %s failed:\n%s", self._address, ex)
                 raise
 
         if len(self._handles) == 0:
-            _LOGGER.debug("Discovering characteristics %s", self._address)
+            _LOGGER.debug("Discovering characteristics for device %s", self._address)
             try:
-                chars = self._conn.getCharacteristics()
+                chars = conn.getCharacteristics()
                 self._handles = {str(a.uuid): a.getHandle() for a in chars}
-            except btle.BTLEException as exc:
-                _LOGGER.debug("Could not discover characteristics %s", self._address, exc_info=exc)
+            except btle.BTLEException as ex:
+                _LOGGER.debug("Couldn't discover characteristics: %s", ex)
                 raise
 
         # authenticate with PIN and initialize static values
         try:
             data = struct.pack(_PIN_STRUCT_PACKING, self._pin)
-            self._conn.writeCharacteristic(self._handles[PASSWORD_CHAR], data, withResponse=True)
-        except btle.BTLEException as exc:
-            _LOGGER.debug("Can't set PIN for device %s. Is pin=%s correct?", self._address, self._pin,
-                          exc_info=exc)
+            conn.writeCharacteristic(self._handles[PASSWORD_CHAR], data, withResponse=True)
+        except btle.BTLEException:
+            _LOGGER.debug("Provided pin=%d was not accepted by device %s", self._pin, self._address)
             raise
 
-    def disconnect(self):
+        _LOGGER.debug("Connected and authenticated with device %s", self._address)
+        return conn
+
+    def _disconnect(self, connection):
         """Disconnect from thermostat"""
-        self._conn.disconnect()
-        _LOGGER.debug("Disconnected from device %s", self._address)
+        try:
+            connection.disconnect()
+        except (btle.BTLEException, BrokenPipeError) as ex:
+            _LOGGER.debug("Couldn't disconnect from device %s:\n%s", self._address, ex)
+            raise btle.BTLEDisconnectError() from ex
+        else:
+            _LOGGER.debug("Disconnected from device %s", self._address)
 
     def should_update(self):
         """
@@ -351,9 +389,7 @@ class CometBlue:
         current = self._current
         target = self._target
 
-        try:
-            self.connect()
-
+        with self.btle_connection() as conn:
             device_infos = [
                 current.model,
                 current.firmware_rev,
@@ -361,35 +397,29 @@ class CometBlue:
                 current.software_rev
             ]
             if None in device_infos:
-                current.model = str(self._conn.readCharacteristic(self._handles[MODEL_CHAR]))
-                current.firmware_rev = str(self._conn.readCharacteristic(self._handles[FIRMWARE_CHAR]))
-                current.manufacturer = str(self._conn.readCharacteristic(self._handles[MANUFACTURER_CHAR]))
-                current.software_rev = str(self._conn.readCharacteristic(self._handles[SOFTWARE_REV]))
+                _LOGGER.debug("Fetching hardware information for device %s", self._address)
+                current.model = str(conn.readCharacteristic(self._handles[MODEL_CHAR]))
+                current.firmware_rev = str(conn.readCharacteristic(self._handles[FIRMWARE_CHAR]))
+                current.manufacturer = str(conn.readCharacteristic(self._handles[MANUFACTURER_CHAR]))
+                current.software_rev = str(conn.readCharacteristic(self._handles[SOFTWARE_REV]))
+                _LOGGER.debug("Sucessfully fetched hardware information")
 
             if target.target_temperature is not None:
-                self._conn.writeCharacteristic(self._handles[TEMPERATURE_CHAR], target.temperatures,
-                                               withResponse=True)
+                conn.writeCharacteristic(self._handles[TEMPERATURE_CHAR],
+                                         target.temperatures,
+                                         withResponse=True)
                 target.target_temperature = None
                 target.offset_temperature = None
+                _LOGGER.debug("Successfully updated Temperatures for device %s", self._address)
 
             if target.status_code is not None:
-                self._conn.writeCharacteristic(self._handles[STATUS_CHAR], target.status_code,
-                                               withResponse=True)
+                conn.writeCharacteristic(self._handles[STATUS_CHAR],
+                                         target.status_code,
+                                         withResponse=True)
                 target.status_code = None
+                _LOGGER.debug("Successfully updated status for device %s", self._address)
 
-            current.temperatures = self._conn.readCharacteristic(self._handles[TEMPERATURE_CHAR])
-
-            current.status_code = self._conn.readCharacteristic(self._handles[STATUS_CHAR])
-
-            current.battery_level = self._conn.readCharacteristic(self._handles[BATTERY_CHAR])
-        except btle.BTLEGattError as exc:
-            _LOGGER.error("Can't read/write cometblue data (%s). Did you set the correct PIN?", self._address,
-                          exc_info=exc)
-            self.available = False
-        except btle.BTLEException as exc:
-            _LOGGER.error("Can't connect to cometblue (%s). Did you set the correct PIN?", self._address, exc_info=exc)
-            self.available = False
-        else:
-            self.available = True
-        finally:
-            self.disconnect()
+            current.temperatures = conn.readCharacteristic(self._handles[TEMPERATURE_CHAR])
+            current.status_code = conn.readCharacteristic(self._handles[STATUS_CHAR])
+            current.battery_level = conn.readCharacteristic(self._handles[BATTERY_CHAR])
+            _LOGGER.debug("Successfully fetched new readings for device %s", self._address)
