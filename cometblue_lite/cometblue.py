@@ -80,12 +80,50 @@ class CometBlueStates:
         self._battery_level = ord(value)
 
     @property
+    def locked(self):
+        return self._status.get('childlock', False)
+
+    @locked.setter
+    def locked(self, value):
+        self._status['childlock'] = value
+
+    @property
     def manual_mode(self):
         return self._status.get('manual_mode', False)
 
     @manual_mode.setter
     def manual_mode(self, value):
         self._status['manual_mode'] = value
+
+    @property
+    def low_battery(self):
+        return self._status.get('low_battery', False)
+
+    @low_battery.setter
+    def low_battery(self, value):
+        self._status['low_battery'] = value
+
+    @property
+    def status(self):
+        actions = ['adapting', 'not_ready', 'installing', 'motor_moving', 'unknown', 'satisfied']
+        active_actions = [k for k, v in self._status.items() if v is True and k in actions]
+
+        return active_actions.pop(0) if active_actions else 'unknown'
+
+    @property
+    def temperature(self):
+        """Current temperature, adjusted by offset temperature"""
+        if self._current_temp is not None:
+            offset_temp = getattr(self, 'offset_temperature', 0.0)
+            return self._current_temp + offset_temp
+
+    @property
+    def window_open(self):
+        return self._status.get('antifrost_activated', False)
+
+    @window_open.setter
+    def window_open(self, value):
+        self._status['antifrost_activated'] = value
 
     @property
     def status(self):
@@ -131,11 +169,6 @@ class CometBlueStates:
             self._status = decode_status(val)
 
     @property
-    def temperature(self):
-        """Current temperature"""
-        return self._current_temp
-
-    @property
     def temperatures(self):
         def float_to_int(value):
             """Encode float for CometBlue update, returns value * 2.0, if value is set, else -128"""
@@ -154,7 +187,7 @@ class CometBlueStates:
             'window_open_detection': int_to_int(self.window_open_detection),
             'window_open_minutes': int_to_int(self.window_open_minutes),
         }
-        _LOGGER.debug("Updating Temperatures to target_temp={%d}", temps['manual_temp'])
+        _LOGGER.debug("Updating Temperatures to {}".format(temps))
 
         data = struct.pack(
             CometBlueStates._TEMPERATURES_STRUCT_PACKING,
@@ -236,6 +269,27 @@ class CometBlue:
                 or self._target.status is not None)
 
     @property
+    def locked(self):
+        """Return True if device is in child lock"""
+        return self._current.locked
+
+    @property
+    def low_battery(self):
+        """Return True if device is signalling log battery"""
+        return self._current.low_battery
+
+    @property
+    def model(self):
+        """Return model (e.g. Comet Blue)"""
+        return self._current.model
+
+    @property
+    def status(self):
+        """Return current device status
+        one of: adapting, not_ready, installing, motor_moving, unknown, satisfied"""
+        return self._current.status
+
+    @property
     def target_temperature(self):
         return self._current.target_temperature
 
@@ -247,6 +301,10 @@ class CometBlue:
     @property
     def current_temperature(self):
         return self._current.temperature
+
+    @property
+    def offset_temperature(self):
+        return self._current.offset_temperature
 
     @property
     def model(self):
@@ -264,6 +322,11 @@ class CometBlue:
     def manual_mode(self, mode):
         """set manual/auto mode. Call update() afterwards"""
         self._target.manual_mode = mode
+
+    @property
+    def window_open(self):
+        """Return True if device detected opened window"""
+        return self._current.window_open
 
     def update(self):
         """Communicate with device, first try to write new values, then read from device"""
