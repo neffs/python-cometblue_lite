@@ -329,10 +329,6 @@ class CometBlue:
         self._target.offset_temperature = temperature
 
     @property
-    def model(self):
-        return self._current.model
-
-    @property
     def battery_level(self):
         return self._current.battery_level
 
