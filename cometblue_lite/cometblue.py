@@ -128,7 +128,7 @@ class CometBlueStates:
         self._status['antifrost_activated'] = value
 
     @property
-    def status(self):
+    def status_code(self):
         def encode_status(value):
             status_dword = 0
             for key, state in value.items():
@@ -141,15 +141,15 @@ class CometBlueStates:
             # downcast to 3 bytes
             return struct.pack(CometBlueStates._STATUS_STRUCT_PACKING, *[int(byte) for byte in value[:3]])
 
-        # check for changed status with 'is not None'
+        # check for changed status_code with 'is not None'
         if len(self._status) == 0:
             return None
         else:
             _LOGGER.debug("Updating Status to %s", self._status)
             return encode_status(self._status)
 
-    @status.setter
-    def status(self, val):
+    @status_code.setter
+    def status_code(self, val):
         def decode_status(value):
             state_bytes = struct.unpack(CometBlueStates._STATUS_STRUCT_PACKING, value)
             state_dword = struct.unpack('<I', value + b'\x00')[0]
@@ -268,7 +268,7 @@ class CometBlue:
         return (not self.available
                 or self._target.target_temperature is not None
                 or self._target.offset_temperature is not None
-                or self._target.status is not None)
+                or self._target.status_code is not None)
 
     @property
     def firmware_rev(self):
@@ -376,14 +376,14 @@ class CometBlue:
                 target.target_temperature = None
                 target.offset_temperature = None
 
-            if target.status is not None:
-                self._conn.writeCharacteristic(self._handles[STATUS_CHAR], target.status,
+            if target.status_code is not None:
+                self._conn.writeCharacteristic(self._handles[STATUS_CHAR], target.status_code,
                                                withResponse=True)
-                target.status = None
+                target.status_code = None
 
             current.temperatures = self._conn.readCharacteristic(self._handles[TEMPERATURE_CHAR])
 
-            current.status = self._conn.readCharacteristic(self._handles[STATUS_CHAR])
+            current.status_code = self._conn.readCharacteristic(self._handles[STATUS_CHAR])
 
             current.battery_level = self._conn.readCharacteristic(self._handles[BATTERY_CHAR])
         except btle.BTLEGattError as exc:
