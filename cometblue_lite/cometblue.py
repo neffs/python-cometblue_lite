@@ -267,6 +267,7 @@ class CometBlue:
         """
         return (not self.available
                 or self._target.target_temperature is not None
+                or self._target.offset_temperature is not None
                 or self._target.status is not None)
 
     @property
@@ -322,6 +323,11 @@ class CometBlue:
     def offset_temperature(self):
         return self._current.offset_temperature
 
+    @offset_temperature.setter
+    def offset_temperature(self, temperature):
+        """Set offset temperature. Call update() afterwards"""
+        self._target.offset_temperature = temperature
+
     @property
     def model(self):
         return self._current.model
@@ -368,6 +374,7 @@ class CometBlue:
                 self._conn.writeCharacteristic(self._handles[TEMPERATURE_CHAR], target.temperatures,
                                                withResponse=True)
                 target.target_temperature = None
+                target.offset_temperature = None
 
             if target.status is not None:
                 self._conn.writeCharacteristic(self._handles[STATUS_CHAR], target.status,
