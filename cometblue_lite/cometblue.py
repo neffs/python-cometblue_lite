@@ -13,13 +13,15 @@ from bluepy import btle
 
 _LOGGER = logging.getLogger(__name__)
 
-COMETBLUE_SERVICE = "47E9EE00-47E9-11E4-8939-164230D1DF67"
 PASSWORD_CHAR = "47e9ee30-47e9-11e4-8939-164230d1df67"
 TEMPERATURE_CHAR = "47e9ee2b-47e9-11e4-8939-164230d1df67"
 BATTERY_CHAR = "47e9ee2c-47e9-11e4-8939-164230d1df67"
 STATUS_CHAR = "47e9ee2a-47e9-11e4-8939-164230d1df67"
 DATETIME_CHAR = "47e9ee01-47e9-11e4-8939-164230d1df67"
-MODEL_CHAR = "47e9ee2d-47e9-11e4-8939-164230d1df67"
+SOFTWARE_REV = "00002a28-0000-1000-8000-00805f9b34fb"       # software_revision (0.0.6-sygonix1)
+MODEL_CHAR = "00002a24-0000-1000-8000-00805f9b34fb"         # model_number (Comet Blue)
+MANUFACTURER_CHAR = "00002a29-0000-1000-8000-00805f9b34fb"  # manufacturer_name (EUROtronic GmbH)
+FIRMWARE_CHAR = "47e9ee2d-47e9-11e4-8939-164230d1df67"      # firmware_revision2 (COBL0126)
 _PIN_STRUCT_PACKING = '<I'
 _DATETIME_STRUCT_PACKING = '<BBBBB'
 _DAY_STRUCT_PACKING = '<BBBBBBBB'
@@ -80,6 +82,14 @@ class CometBlueStates:
         self._battery_level = ord(value)
 
     @property
+    def locked(self):
+        return self._status.get('childlock', False)
+
+    @locked.setter
+    def locked(self, value):
+        self._status['childlock'] = value
+
+    @property
     def manual_mode(self):
         return self._status.get('manual_mode', False)
 
@@ -88,7 +98,37 @@ class CometBlueStates:
         self._status['manual_mode'] = value
 
     @property
+    def low_battery(self):
+        return self._status.get('low_battery', False)
+
+    @low_battery.setter
+    def low_battery(self, value):
+        self._status['low_battery'] = value
+
+    @property
     def status(self):
+        actions = ['adapting', 'not_ready', 'installing', 'motor_moving', 'unknown', 'satisfied']
+        active_actions = [k for k, v in self._status.items() if v is True and k in actions]
+
+        return active_actions.pop(0) if active_actions else 'unknown'
+
+    @property
+    def temperature(self):
+        """Current temperature, adjusted by offset temperature"""
+        if self._current_temp is not None:
+            offset_temp = getattr(self, 'offset_temperature', 0.0)
+            return self._current_temp + offset_temp
+
+    @property
+    def window_open(self):
+        return self._status.get('antifrost_activated', False)
+
+    @window_open.setter
+    def window_open(self, value):
+        self._status['antifrost_activated'] = value
+
+    @property
+    def status_code(self):
         def encode_status(value):
             status_dword = 0
             for key, state in value.items():
@@ -101,15 +141,15 @@ class CometBlueStates:
             # downcast to 3 bytes
             return struct.pack(CometBlueStates._STATUS_STRUCT_PACKING, *[int(byte) for byte in value[:3]])
 
-        # check for changed status with 'is not None'
+        # check for changed status_code with 'is not None'
         if len(self._status) == 0:
             return None
         else:
             _LOGGER.debug("Updating Status to %s", self._status)
             return encode_status(self._status)
 
-    @status.setter
-    def status(self, val):
+    @status_code.setter
+    def status_code(self, val):
         def decode_status(value):
             state_bytes = struct.unpack(CometBlueStates._STATUS_STRUCT_PACKING, value)
             state_dword = struct.unpack('<I', value + b'\x00')[0]
@@ -131,11 +171,6 @@ class CometBlueStates:
             self._status = decode_status(val)
 
     @property
-    def temperature(self):
-        """Current temperature"""
-        return self._current_temp
-
-    @property
     def temperatures(self):
         def float_to_int(value):
             """Encode float for CometBlue update, returns value * 2.0, if value is set, else -128"""
@@ -154,7 +189,7 @@ class CometBlueStates:
             'window_open_detection': int_to_int(self.window_open_detection),
             'window_open_minutes': int_to_int(self.window_open_minutes),
         }
-        _LOGGER.debug("Updating Temperatures to target_temp={%d}", temps['manual_temp'])
+        _LOGGER.debug("Updating Temperatures to {}".format(temps))
 
         data = struct.pack(
             CometBlueStates._TEMPERATURES_STRUCT_PACKING,
@@ -205,8 +240,7 @@ class CometBlue:
         if len(self._handles) == 0:
             _LOGGER.debug("Discovering characteristics %s", self._address)
             try:
-                service = self._conn.getServiceByUUID(COMETBLUE_SERVICE)
-                chars = service.getCharacteristics()
+                chars = self._conn.getCharacteristics()
                 self._handles = {str(a.uuid): a.getHandle() for a in chars}
             except btle.BTLEException as exc:
                 _LOGGER.debug("Could not discover characteristics %s", self._address, exc_info=exc)
@@ -233,7 +267,44 @@ class CometBlue:
         """
         return (not self.available
                 or self._target.target_temperature is not None
-                or self._target.status is not None)
+                or self._target.offset_temperature is not None
+                or self._target.status_code is not None)
+
+    @property
+    def firmware_rev(self):
+        """Return firmware revision (e.g. COBL0126)"""
+        return self._current.firmware_rev
+
+    @property
+    def locked(self):
+        """Return True if device is in child lock"""
+        return self._current.locked
+
+    @property
+    def low_battery(self):
+        """Return True if device is signalling log battery"""
+        return self._current.low_battery
+
+    @property
+    def manufacturer(self):
+        """Return manufacturer name (e.g. EUROtronic GmbH)"""
+        return self._current.manufacturer
+
+    @property
+    def model(self):
+        """Return model (e.g. Comet Blue)"""
+        return self._current.model
+
+    @property
+    def software_rev(self):
+        """Return software revision (e.g. 0.0.6-sygonix1)"""
+        return self._current.software_rev
+
+    @property
+    def status(self):
+        """Return current device status
+        one of: adapting, not_ready, installing, motor_moving, unknown, satisfied"""
+        return self._current.status
 
     @property
     def target_temperature(self):
@@ -247,6 +318,15 @@ class CometBlue:
     @property
     def current_temperature(self):
         return self._current.temperature
+
+    @property
+    def offset_temperature(self):
+        return self._current.offset_temperature
+
+    @offset_temperature.setter
+    def offset_temperature(self, temperature):
+        """Set offset temperature. Call update() afterwards"""
+        self._target.offset_temperature = temperature
 
     @property
     def model(self):
@@ -265,6 +345,11 @@ class CometBlue:
         """set manual/auto mode. Call update() afterwards"""
         self._target.manual_mode = mode
 
+    @property
+    def window_open(self):
+        """Return True if device detected opened window"""
+        return self._current.window_open
+
     def update(self):
         """Communicate with device, first try to write new values, then read from device"""
         current = self._current
@@ -273,22 +358,32 @@ class CometBlue:
         try:
             self.connect()
 
-            if current.model is None:
+            device_infos = [
+                current.model,
+                current.firmware_rev,
+                current.manufacturer,
+                current.software_rev
+            ]
+            if None in device_infos:
                 current.model = str(self._conn.readCharacteristic(self._handles[MODEL_CHAR]))
+                current.firmware_rev = str(self._conn.readCharacteristic(self._handles[FIRMWARE_CHAR]))
+                current.manufacturer = str(self._conn.readCharacteristic(self._handles[MANUFACTURER_CHAR]))
+                current.software_rev = str(self._conn.readCharacteristic(self._handles[SOFTWARE_REV]))
 
             if target.target_temperature is not None:
                 self._conn.writeCharacteristic(self._handles[TEMPERATURE_CHAR], target.temperatures,
                                                withResponse=True)
                 target.target_temperature = None
+                target.offset_temperature = None
 
-            if target.status is not None:
-                self._conn.writeCharacteristic(self._handles[STATUS_CHAR], target.status,
+            if target.status_code is not None:
+                self._conn.writeCharacteristic(self._handles[STATUS_CHAR], target.status_code,
                                                withResponse=True)
-                target.status = None
+                target.status_code = None
 
             current.temperatures = self._conn.readCharacteristic(self._handles[TEMPERATURE_CHAR])
 
-            current.status = self._conn.readCharacteristic(self._handles[STATUS_CHAR])
+            current.status_code = self._conn.readCharacteristic(self._handles[STATUS_CHAR])
 
             current.battery_level = self._conn.readCharacteristic(self._handles[BATTERY_CHAR])
         except btle.BTLEGattError as exc:
