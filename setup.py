@@ -3,7 +3,7 @@ from setuptools import setup
 
 setup(
     name='cometblue_lite',
-    version='0.3',
+    version='0.3.1',
     packages=['cometblue_lite'],
     python_requires='>=3.4',
     install_requires=['bluepy>=1.3'],

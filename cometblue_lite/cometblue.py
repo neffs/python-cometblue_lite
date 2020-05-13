@@ -348,6 +348,14 @@ class CometBlue:
     def target_temperature(self):
         return self._current.target_temperature
 
+    @property
+    def target_temperature_low(self):
+        return self._current.target_temp_l
+
+    @property
+    def target_temperature_high(self):
+        return self._current.target_temp_h
+
     @target_temperature.setter
     def target_temperature(self, temperature):
         """Set manual temperature. Call update() afterwards"""
@@ -398,10 +406,10 @@ class CometBlue:
             ]
             if None in device_infos:
                 _LOGGER.debug("Fetching hardware information for device %s", self._address)
-                current.model = str(conn.readCharacteristic(self._handles[MODEL_CHAR]))
-                current.firmware_rev = str(conn.readCharacteristic(self._handles[FIRMWARE_CHAR]))
-                current.manufacturer = str(conn.readCharacteristic(self._handles[MANUFACTURER_CHAR]))
-                current.software_rev = str(conn.readCharacteristic(self._handles[SOFTWARE_REV]))
+                current.model = conn.readCharacteristic(self._handles[MODEL_CHAR]).decode()
+                current.firmware_rev = conn.readCharacteristic(self._handles[FIRMWARE_CHAR]).decode()
+                current.manufacturer = conn.readCharacteristic(self._handles[MANUFACTURER_CHAR]).decode()
+                current.software_rev = conn.readCharacteristic(self._handles[SOFTWARE_REV]).decode()
                 _LOGGER.debug("Sucessfully fetched hardware information")
 
             if target.target_temperature is not None:
