@@ -201,15 +201,23 @@ class CometBlueStates:
 
     @temperatures.setter
     def temperatures(self, value):
-        current_temp, manual_temp, target_low, target_high, offset_temp, window_open_detect, window_open_minutes = \
-            struct.unpack(CometBlueStates._TEMPERATURES_STRUCT_PACKING, value)
-        self._current_temp = current_temp / 2.0
-        self.target_temperature = manual_temp / 2.0
-        self.target_temp_l = target_low / 2.0
-        self.target_temp_h = target_high / 2.0
-        self.offset_temperature = offset_temp / 2.0
-        self.window_open_detection = window_open_detect
-        self.window_open_minutes = window_open_minutes
+        temps = struct.unpack(CometBlueStates._TEMPERATURES_STRUCT_PACKING, value)
+        current_temp, manual_temp, target_low, target_high, offset_temp, window_open_detect, window_open_minutes = temps
+        if current_temp != -128:
+            self._current_temp = current_temp / 2.0
+        if manual_temp != -128:
+            self.target_temperature = manual_temp / 2.0
+        if target_low != -128:
+            self.target_temp_l = target_low / 2.0
+        if target_high != -128:
+            self.target_temp_h = target_high / 2.0
+        if offset_temp != -128:
+            self.offset_temperature = offset_temp / 2.0
+        if window_open_detect != -128:
+            self.window_open_detection = window_open_detect
+        if window_open_detect != -128:
+            self.window_open_minutes = window_open_minutes
+        _LOGGER.debug("Got Temperatures: {}".format(temps))
 
 
 class CometBlue:
