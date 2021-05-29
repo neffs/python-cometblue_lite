@@ -206,25 +206,25 @@ class CometBlueStates:
         temps = struct.unpack(CometBlueStates._TEMPERATURES_STRUCT_PACKING, value)
         current_temp, manual_temp, target_low, target_high, offset_temp, window_open_detect, window_open_minutes = temps
 
+        # abort on any invalid temperature value
+        if -128 in temps:
+            _LOGGER.debug("Got invalid Temperatures: {}".format(temps))
+            return
+
         # preserve current "target_temperature" when TEMPERATURE_OFF is active
-        if manual_temp != -128:
-          if manual_temp / 2.0 == CometBlueStates.TEMPERATURE_OFF:
-              self.is_off = True
-          else:
-              self.is_off = False
-              self.target_temperature = manual_temp / 2.0
-        if current_temp != -128:
-            self._current_temp = current_temp / 2.0
-        if target_low != -128:
-            self.target_temp_l = target_low / 2.0
-        if target_high != -128:
-            self.target_temp_h = target_high / 2.0
-        if offset_temp != -128:
-            self.offset_temperature = offset_temp / 2.0
-        if window_open_detect != -128:
-            self.window_open_detection = window_open_detect
-        if window_open_detect != -128:
-            self.window_open_minutes = window_open_minutes
+        if manual_temp / 2.0 == CometBlueStates.TEMPERATURE_OFF:
+            self.is_off = True
+        else:
+            self.is_off = False
+            self.target_temperature = manual_temp / 2.0
+
+        self._current_temp = current_temp / 2.0
+        self.target_temp_l = target_low / 2.0
+        self.target_temp_h = target_high / 2.0
+        self.offset_temperature = offset_temp / 2.0
+        self.window_open_detection = window_open_detect
+        self.window_open_minutes = window_open_minutes
+
         _LOGGER.debug("Got Temperatures: {}".format(temps))
 
 
