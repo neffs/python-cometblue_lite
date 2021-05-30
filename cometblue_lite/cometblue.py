@@ -67,15 +67,18 @@ class CometBlueStates:
         self.model = None
         self.name = None
         self.software_rev = None
+        self._status = dict()
+        self._battery_level = None
+        self._current_temp = None
+        self.clear_temperatures()
+
+    def clear_temperatures(self):
         self.target_temperature = None
         self.target_temp_l = None
         self.target_temp_h = None
         self.offset_temperature = None
         self.window_open_detection = None
         self.window_open_minutes = None
-        self._status = dict()
-        self._battery_level = None
-        self._current_temp = None
 
     @property
     def battery_level(self):
@@ -226,6 +229,14 @@ class CometBlueStates:
         self.window_open_minutes = window_open_minutes
 
         _LOGGER.debug("Got Temperatures: {}".format(temps))
+
+    @property
+    def all_temperatures_none(self):
+        """True if any of the temperature properties is not None"""
+        values = set((self.target_temp_l, self.target_temp_h, self.offset_temperature, self.window_open_detection, self.window_open_minutes))
+        values.remove(None)
+        return len(values) == 0
+
 
 
 class CometBlue:
@@ -383,14 +394,6 @@ class CometBlue:
     def target_temperature(self):
         return self._current.target_temperature
 
-    @property
-    def target_temperature_low(self):
-        return self._current.target_temp_l
-
-    @property
-    def target_temperature_high(self):
-        return self._current.target_temp_h
-
     @target_temperature.setter
     def target_temperature(self, temperature):
         """Set manual temperature. Call update() afterwards"""
@@ -398,6 +401,22 @@ class CometBlue:
             self._current.target_temperature = temperature
         else:
             self._target.target_temperature = temperature
+
+    @property
+    def target_temperature_low(self):
+        return self._current.target_temp_l
+
+    @target_temperature_low.setter
+    def target_temperature_low(self, temperature):
+        self._target.target_temp_l = temperature
+
+    @property
+    def target_temperature_high(self):
+        return self._current.target_temp_h
+
+    @target_temperature_high.setter
+    def target_temperature_high(self, temperature):
+        self._target.target_temp_h = temperature
 
     @property
     def current_temperature(self):
@@ -450,12 +469,11 @@ class CometBlue:
                 current.software_rev = conn.readCharacteristic(self._handles[SOFTWARE_REV]).decode()
                 _LOGGER.debug("Sucessfully fetched hardware information")
 
-            if target.target_temperature is not None:
+            if not target.all_temperatures_none:
                 conn.writeCharacteristic(self._handles[TEMPERATURE_CHAR],
                                          target.temperatures,
                                          withResponse=True)
-                target.target_temperature = None
-                target.offset_temperature = None
+                target.clear_temperatures()
                 _LOGGER.debug("Successfully updated Temperatures for device %s", self._address)
 
             if target.status_code is not None:
