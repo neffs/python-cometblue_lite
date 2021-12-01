@@ -233,7 +233,7 @@ class CometBlueStates:
     @property
     def all_temperatures_none(self):
         """True if any of the temperature properties is not None"""
-        values = set((self.target_temp_l, self.target_temp_h, self.offset_temperature, self.window_open_detection, self.window_open_minutes))
+        values = set((self.target_temperature, self.target_temp_l, self.target_temp_h, self.offset_temperature, self.window_open_detection, self.window_open_minutes))
         values.remove(None)
         return len(values) == 0
 
