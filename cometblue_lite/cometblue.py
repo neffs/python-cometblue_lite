@@ -1,19 +1,28 @@
 """
 A very basic module for Eurotronic CometBlue thermostats.
-They are identical to the Sygonix, Xavax Bluetooth thermostats
+These are identical to the Sygonix and Xavax Bluetooth thermostats
 
-This version is based on the bluepy module.
-Currently only current and target temperature in manual mode is supported, nothing else.
 Parts were taken from the cometblue module by im-0
+Port to bleak/asyncio is based on pySwitchbot
 """
 import logging
 import struct
 import time
 from contextlib import contextmanager
 
-from bluepy import btle
+import asyncio
+from bleak import BleakError, BleakScanner
+from bleak.backends.device import BLEDevice
+from bleak.backends.service import BleakGATTCharacteristic, BleakGATTServiceCollection
+from bleak_retry_connector import (
+    BleakClientWithServiceCache,
+    BleakNotFoundError,
+    ble_device_has_changed,
+    establish_connection,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
 
 PASSWORD_CHAR = "47e9ee30-47e9-11e4-8939-164230d1df67"
 TEMPERATURE_CHAR = "47e9ee2b-47e9-11e4-8939-164230d1df67"
@@ -23,10 +32,13 @@ DATETIME_CHAR = "47e9ee01-47e9-11e4-8939-164230d1df67"
 SOFTWARE_REV = "00002a28-0000-1000-8000-00805f9b34fb"       # software_revision (0.0.6-sygonix1)
 MODEL_CHAR = "00002a24-0000-1000-8000-00805f9b34fb"         # model_number (Comet Blue)
 MANUFACTURER_CHAR = "00002a29-0000-1000-8000-00805f9b34fb"  # manufacturer_name (EUROtronic GmbH)
+#FIRMWARE_CHAR = "00002a26-0000-1000-8000-00805f9b34fb"
+
 FIRMWARE_CHAR = "47e9ee2d-47e9-11e4-8939-164230d1df67"      # firmware_revision2 (COBL0126)
 _PIN_STRUCT_PACKING = '<I'
 _DATETIME_STRUCT_PACKING = '<BBBBB'
 _DAY_STRUCT_PACKING = '<BBBBBBBB'
+DISCONNECT_DELAY = 49
 
 
 def _encode_datetime(dt):
@@ -245,86 +257,166 @@ class CometBlue:
     def __init__(self, address, pin):
         super(CometBlue, self).__init__()
         self._address = address
+        self._device: BLEDevice | None = None
         self._pin = pin
         self.available = False
         self._handles = dict()
         self._current = CometBlueStates()
         self._target = CometBlueStates()
+        self._connect_lock = asyncio.Lock()
+        self._operation_lock = asyncio.Lock()
+        self._client: BleakClientWithServiceCache | None = None
+        self._cached_services: BleakGATTServiceCollection | None = None
+        self._read_char: BleakGATTCharacteristic | None = None
+        self._write_char: BleakGATTCharacteristic | None = None
+        self._disconnect_timer: asyncio.TimerHandle | None = None
+        self._expected_disconnect = False
+        self.loop = asyncio.get_event_loop()
         # btle.Debugging = True
+    async def _ensure_connected(self):
+        """Ensure connection to device is established."""
+        if self._connect_lock.locked():
+            _LOGGER.debug(
+                "%s: Connection already in progress, waiting for it to complete;",
+                self._address,
+            )
+        if self._client and self._client.is_connected:
+            self._reset_disconnect_timer()
+            return
+        async with self._connect_lock:
+            # Check again while holding the lock
+            if self._client and self._client.is_connected:
+                self._reset_disconnect_timer()
+                return
+            _LOGGER.debug("%s: Connecting; ", self._address)
+            if self._device is None: 
+                self._device = await BleakScanner.find_device_by_address(self._address, 60.0)
+                if self._device is None:
+                    self._device = await BleakScanner.find_device_by_address(self._address, 60.0)
+                    if self._device is None:
+                        raise Exception("could not discover device")
 
-    @contextmanager
-    def btle_connection(self):
-        """Contextmanager to handle a bluetooth connection to Comet Blue device.
-        Any problem that arises when using the connection, will be handled,
-        the connection closed and any resources aquired released.
-        Debug logging for analysis is integrated, the errors are raised to be
-        handled by the user.
+            client = await establish_connection(
+                BleakClientWithServiceCache,
+                self._device,
+                self._address,
+                self._disconnected,
+                cached_services=self._cached_services,
+            )
+            self._cached_services = client.services
+            _LOGGER.debug("%s: Connected", self._address)
+            services = client.services
+            self._client = client
+            # authenticate with PIN and initialize static values
+            self._reset_disconnect_timer()
 
-        The following aspects are managed:
-        * Connect handles setup, preparations for read/write and authentication.
-        * Read/Write error handling.
-        * Disconnect handles proper releasing of any aquired resources.
-        """
-        conn = self._connect()
-        self.available = True
+        data = struct.pack(_PIN_STRUCT_PACKING, self._pin)
         try:
-            yield conn
-        except btle.BTLEException as ex:
-            _LOGGER.debug("Couldn't read/write cometblue data for device %s:\n%s", self._address, ex)
-            self.available = False
-            raise
-        except BrokenPipeError as ex:
-            _LOGGER.debug("Device %s BrokenPipeError: %s", self._address, ex)
-            self.available = False
-            raise btle.BTLEDisconnectError() from ex
-        finally:
-            self._disconnect(conn)
-
-    def _connect(self):
-        """Connect to thermostat and send PIN"""
-        conn = btle.Peripheral()
-        _LOGGER.debug("Connecting to device %s", self._address)
-        try:
-            conn.connect(self._address)
-        except btle.BTLEException as ex:
-            _LOGGER.debug("Couldn't establish connection with %s, retrying:\n%s", self._address, ex)
-            time.sleep(2)
-            try:
-                conn.connect(self._address)
-            except Exception as ex:
-                _LOGGER.debug("Connecting to device %s failed:\n%s", self._address, ex)
-                raise
-
-        if len(self._handles) == 0:
-            _LOGGER.debug("Discovering characteristics for device %s", self._address)
-            try:
-                chars = conn.getCharacteristics()
-                self._handles = {str(a.uuid): a.getHandle() for a in chars}
-            except btle.BTLEException as ex:
-                _LOGGER.debug("Couldn't discover characteristics: %s", ex)
-                raise
-
-        # authenticate with PIN and initialize static values
-        try:
-            data = struct.pack(_PIN_STRUCT_PACKING, self._pin)
-            conn.writeCharacteristic(self._handles[PASSWORD_CHAR], data, withResponse=True)
-        except btle.BTLEException:
-            _LOGGER.debug("Provided pin=%d was not accepted by device %s", self._pin, self._address)
-            raise
+            await self._client.write_gatt_char(PASSWORD_CHAR, data, response=True)
+        except BleakError:
+            _LOGGER.error("provided pin was not accepted by device %s" % client.address)
 
         _LOGGER.debug("Connected and authenticated with device %s", self._address)
-        return conn
 
-    def _disconnect(self, connection):
-        """Disconnect from thermostat"""
-        try:
-            connection.disconnect()
-        except (btle.BTLEException, BrokenPipeError) as ex:
-            _LOGGER.debug("Couldn't disconnect from device %s:\n%s", self._address, ex)
-            raise btle.BTLEDisconnectError() from ex
-        else:
-            _LOGGER.debug("Disconnected from device %s", self._address)
 
+    
+    # @contextmanager
+    # def btle_connection(self):
+    #     """Contextmanager to handle a bluetooth connection to Comet Blue device.
+    #     Any problem that arises when using the connection, will be handled,
+    #     the connection closed and any resources aquired released.
+    #     Debug logging for analysis is integrated, the errors are raised to be
+    #     handled by the user.
+
+    #     The following aspects are managed:
+    #     * Connect handles setup, preparations for read/write and authentication.
+    #     * Read/Write error handling.
+    #     * Disconnect handles proper releasing of any aquired resources.
+    #     """
+    #     conn = self._connect()
+    #     try:
+    #         yield conn
+    #     except btle.BTLEException as ex:
+    #         _LOGGER.debug("Couldn't read/write cometblue data for device %s:\n%s", self._address, ex)
+    #         self.available = False
+    #         raise
+    #     except BrokenPipeError as ex:
+    #         _LOGGER.debug("Device %s BrokenPipeError: %s", self._address, ex)
+    #         self.available = False
+    #         raise btle.BTLEDisconnectError() from ex
+    #     finally:
+    #         self._disconnect(conn)
+    #         self.available = True
+
+    # async def _connect(self):
+    #     """Connect to thermostat and send PIN"""
+    #     conn = BleakClient(address)
+    #     _LOGGER.debug("Connecting to device %s", self._address)
+    #     try:
+    #         await conn.connect(self._address)
+    #     except Exception as ex:
+    #         _LOGGER.debug("Couldn't establish connection with %s, retrying:\n%s", self._address, ex)
+    #         asyncio.sleep(2.0)
+    #         try:
+    #             await conn.connect(self._address)
+    #         except Exception as ex:
+    #             _LOGGER.debug("Connecting to device %s failed:\n%s", self._address, ex)
+    #             raise
+
+    #     if len(self._handles) == 0:
+    #         _LOGGER.debug("Discovering characteristics for device %s", self._address)
+    #         try:
+    #             chars = conn.getCharacteristics()
+    #             self._handles = {str(a.uuid): a.getHandle() for a in chars}
+    #         except btle.BTLEException as ex:
+    #             _LOGGER.debug("Couldn't discover characteristics: %s", ex)
+    #             raise
+
+    #     # authenticate with PIN and initialize static values
+    #     try:
+    #         data = struct.pack(_PIN_STRUCT_PACKING, self._pin)
+    #         conn.writeCharacteristic(self._handles[PASSWORD_CHAR], data, withResponse=True)
+    #     except btle.BTLEException:
+    #         _LOGGER.debug("Provided pin=%d was not accepted by device %s", self._pin, self._address)
+    #         raise
+
+    #     _LOGGER.debug("Connected and authenticated with device %s", self._address)
+    #     return conn
+
+    # def _disconnect(self, connection):
+    #     """Disconnect from thermostat"""
+    #     try:
+    #         connection.disconnect()
+    #     except (btle.BTLEException, BrokenPipeError) as ex:
+    #         _LOGGER.debug("Couldn't disconnect from device %s:\n%s", self._address, ex)
+    #         raise btle.BTLEDisconnectError() from ex
+    #     else:
+    #         _LOGGER.debug("Disconnected from device %s", self._address)
+    def _disconnected(self, client: BleakClientWithServiceCache) -> None:
+        """Disconnected callback."""
+        if self._expected_disconnect:
+            _LOGGER.debug(
+                "%s: Disconnected from device;", self._address
+            )
+            return
+        _LOGGER.warning(
+            "%s: Device unexpectedly disconnected",
+            self._address
+        )
+    def _reset_disconnect_timer(self):
+        """Reset disconnect timer."""
+        if self._disconnect_timer:
+            self._disconnect_timer.cancel()
+        self._expected_disconnect = False
+        self._disconnect_timer = self.loop.call_later(
+            DISCONNECT_DELAY, self._disconnect
+        )
+
+    def _disconnect(self):
+        """Disconnect from device."""
+        self._disconnect_timer = None
+        asyncio.create_task(self._execute_disconnect())
+    
     def should_update(self):
         """
         Signal necessity to call update() on next cycle because values need
@@ -449,41 +541,46 @@ class CometBlue:
         """Return True if device detected opened window"""
         return self._current.window_open
 
-    def update(self):
+    async def update(self):
         """Communicate with device, first try to write new values, then read from device"""
         current = self._current
         target = self._target
 
-        with self.btle_connection() as conn:
-            device_infos = [
-                current.model,
-                current.firmware_rev,
-                current.manufacturer,
-                current.software_rev
-            ]
-            if None in device_infos:
-                _LOGGER.debug("Fetching hardware information for device %s", self._address)
-                current.model = conn.readCharacteristic(self._handles[MODEL_CHAR]).decode()
-                current.firmware_rev = conn.readCharacteristic(self._handles[FIRMWARE_CHAR]).decode()
-                current.manufacturer = conn.readCharacteristic(self._handles[MANUFACTURER_CHAR]).decode()
-                current.software_rev = conn.readCharacteristic(self._handles[SOFTWARE_REV]).decode()
-                _LOGGER.debug("Sucessfully fetched hardware information")
+        #with self.btle_connection() as conn:
+        await self._ensure_connected()
 
-            if not target.all_temperatures_none:
-                conn.writeCharacteristic(self._handles[TEMPERATURE_CHAR],
-                                         target.temperatures,
-                                         withResponse=True)
-                target.clear_temperatures()
-                _LOGGER.debug("Successfully updated Temperatures for device %s", self._address)
+        conn = self._client
+        device_infos = [
+            current.model,
+            current.firmware_rev,
+            current.manufacturer,
+            current.software_rev
+        ]
+        if None in device_infos:
+            _LOGGER.debug("Fetching hardware information for device %s", self._address)
+            current.model = (await conn.read_gatt_char(MODEL_CHAR)).decode()
+            current.firmware_rev = (await conn.read_gatt_char(FIRMWARE_CHAR)).decode()
+            current.manufacturer = (await conn.read_gatt_char(MANUFACTURER_CHAR)).decode()
+            current.software_rev = (await  conn.read_gatt_char(SOFTWARE_REV)).decode()
+            _LOGGER.debug("Sucessfully fetched hardware information")
 
-            if target.status_code is not None:
-                conn.writeCharacteristic(self._handles[STATUS_CHAR],
-                                         target.status_code,
-                                         withResponse=True)
-                target.status_code = None
-                _LOGGER.debug("Successfully updated status for device %s", self._address)
+        if not target.all_temperatures_none:
+            await conn.write_gatt_char(TEMPERATURE_CHAR,
+                                        target.temperatures,
+                                        response=True)
+            target.clear_temperatures()
+            _LOGGER.debug("Successfully updated Temperatures for device %s", self._address)
 
-            current.temperatures = conn.readCharacteristic(self._handles[TEMPERATURE_CHAR])
-            current.status_code = conn.readCharacteristic(self._handles[STATUS_CHAR])
-            current.battery_level = conn.readCharacteristic(self._handles[BATTERY_CHAR])
-            _LOGGER.debug("Successfully fetched new readings for device %s", self._address)
+        if target.status_code is not None:
+            await conn.write_gatt_char(STATUS_CHAR,
+                                        target.status_code,
+                                        response=True)
+            target.status_code = None
+            _LOGGER.debug("Successfully updated status for device %s", self._address)
+
+        current.temperatures = await conn.read_gatt_char(TEMPERATURE_CHAR)
+        current.status_code = await conn.read_gatt_char(STATUS_CHAR)
+        current.battery_level = await conn.read_gatt_char(BATTERY_CHAR)
+        _LOGGER.debug("Successfully fetched new readings for device %s", self._address)
+        self.available = True
+
