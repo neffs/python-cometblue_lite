@@ -396,13 +396,12 @@ class CometBlue:
         """Disconnected callback."""
         if self._expected_disconnect:
             _LOGGER.debug(
-                "%s: Disconnected from device; RSSI: %s", self.name, self.rssi
+                "%s: Disconnected from device;", self._address
             )
             return
         _LOGGER.warning(
-            "%s: Device unexpectedly disconnected; RSSI: %s",
-            self.name,
-            self.rssi,
+            "%s: Device unexpectedly disconnected",
+            self._address
         )
     def _reset_disconnect_timer(self):
         """Reset disconnect timer."""
@@ -412,6 +411,12 @@ class CometBlue:
         self._disconnect_timer = self.loop.call_later(
             DISCONNECT_DELAY, self._disconnect
         )
+
+    def _disconnect(self):
+        """Disconnect from device."""
+        self._disconnect_timer = None
+        asyncio.create_task(self._execute_disconnect())
+    
     def should_update(self):
         """
         Signal necessity to call update() on next cycle because values need
