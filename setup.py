@@ -3,7 +3,7 @@ from setuptools import setup
 
 setup(
     name='cometblue_lite',
-    version='0.5.2',
+    version='0.5.3',
     packages=['cometblue_lite'],
     python_requires='>=3.4',
     install_requires=['bleak_retry_connector>=1.8.0', 'bleak>=0.15.1'],
