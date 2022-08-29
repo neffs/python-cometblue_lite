@@ -319,79 +319,6 @@ class CometBlue:
         _LOGGER.debug("Connected and authenticated with device %s", self._address)
 
 
-    
-    # @contextmanager
-    # def btle_connection(self):
-    #     """Contextmanager to handle a bluetooth connection to Comet Blue device.
-    #     Any problem that arises when using the connection, will be handled,
-    #     the connection closed and any resources aquired released.
-    #     Debug logging for analysis is integrated, the errors are raised to be
-    #     handled by the user.
-
-    #     The following aspects are managed:
-    #     * Connect handles setup, preparations for read/write and authentication.
-    #     * Read/Write error handling.
-    #     * Disconnect handles proper releasing of any aquired resources.
-    #     """
-    #     conn = self._connect()
-    #     try:
-    #         yield conn
-    #     except btle.BTLEException as ex:
-    #         _LOGGER.debug("Couldn't read/write cometblue data for device %s:\n%s", self._address, ex)
-    #         self.available = False
-    #         raise
-    #     except BrokenPipeError as ex:
-    #         _LOGGER.debug("Device %s BrokenPipeError: %s", self._address, ex)
-    #         self.available = False
-    #         raise btle.BTLEDisconnectError() from ex
-    #     finally:
-    #         self._disconnect(conn)
-    #         self.available = True
-
-    # async def _connect(self):
-    #     """Connect to thermostat and send PIN"""
-    #     conn = BleakClient(address)
-    #     _LOGGER.debug("Connecting to device %s", self._address)
-    #     try:
-    #         await conn.connect(self._address)
-    #     except Exception as ex:
-    #         _LOGGER.debug("Couldn't establish connection with %s, retrying:\n%s", self._address, ex)
-    #         asyncio.sleep(2.0)
-    #         try:
-    #             await conn.connect(self._address)
-    #         except Exception as ex:
-    #             _LOGGER.debug("Connecting to device %s failed:\n%s", self._address, ex)
-    #             raise
-
-    #     if len(self._handles) == 0:
-    #         _LOGGER.debug("Discovering characteristics for device %s", self._address)
-    #         try:
-    #             chars = conn.getCharacteristics()
-    #             self._handles = {str(a.uuid): a.getHandle() for a in chars}
-    #         except btle.BTLEException as ex:
-    #             _LOGGER.debug("Couldn't discover characteristics: %s", ex)
-    #             raise
-
-    #     # authenticate with PIN and initialize static values
-    #     try:
-    #         data = struct.pack(_PIN_STRUCT_PACKING, self._pin)
-    #         conn.writeCharacteristic(self._handles[PASSWORD_CHAR], data, withResponse=True)
-    #     except btle.BTLEException:
-    #         _LOGGER.debug("Provided pin=%d was not accepted by device %s", self._pin, self._address)
-    #         raise
-
-    #     _LOGGER.debug("Connected and authenticated with device %s", self._address)
-    #     return conn
-
-    # def _disconnect(self, connection):
-    #     """Disconnect from thermostat"""
-    #     try:
-    #         connection.disconnect()
-    #     except (btle.BTLEException, BrokenPipeError) as ex:
-    #         _LOGGER.debug("Couldn't disconnect from device %s:\n%s", self._address, ex)
-    #         raise btle.BTLEDisconnectError() from ex
-    #     else:
-    #         _LOGGER.debug("Disconnected from device %s", self._address)
     def _disconnected(self, client: BleakClientWithServiceCache) -> None:
         """Disconnected callback."""
         if self._expected_disconnect:
@@ -416,6 +343,18 @@ class CometBlue:
         """Disconnect from device."""
         self._disconnect_timer = None
         asyncio.create_task(self._execute_disconnect())
+
+    async def _execute_disconnect(self):
+        """Execute disconnection."""
+        async with self._connect_lock:
+            client = self._client
+            self._expected_disconnect = True
+            self._client = None
+            self._read_char = None
+            self._write_char = None
+            if client and client.is_connected:
+                await client.disconnect()
+
     
     def should_update(self):
         """
