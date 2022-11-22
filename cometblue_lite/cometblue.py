@@ -5,6 +5,8 @@ These are identical to the Sygonix and Xavax Bluetooth thermostats
 Parts were taken from the cometblue module by im-0
 Port to bleak/asyncio is based on pySwitchbot
 """
+from __future__ import annotations
+
 import logging
 import struct
 import time
@@ -15,7 +17,7 @@ from bleak import BleakError, BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.service import BleakGATTCharacteristic, BleakGATTServiceCollection
 from bleak_retry_connector import (
-    BleakClientWithServiceCache,
+    BleakClient,
     BleakNotFoundError,
     ble_device_has_changed,
     establish_connection,
@@ -265,7 +267,7 @@ class CometBlue:
         self._target = CometBlueStates()
         self._connect_lock = asyncio.Lock()
         self._operation_lock = asyncio.Lock()
-        self._client: BleakClientWithServiceCache | None = None
+        self._client: BleakClient | None = None
         self._cached_services: BleakGATTServiceCollection | None = None
         self._read_char: BleakGATTCharacteristic | None = None
         self._write_char: BleakGATTCharacteristic | None = None
@@ -297,7 +299,7 @@ class CometBlue:
                         raise Exception("could not discover device")
 
             client = await establish_connection(
-                BleakClientWithServiceCache,
+                BleakClient,
                 self._device,
                 self._address,
                 self._disconnected,
@@ -319,7 +321,7 @@ class CometBlue:
         _LOGGER.debug("Connected and authenticated with device %s", self._address)
 
 
-    def _disconnected(self, client: BleakClientWithServiceCache) -> None:
+    def _disconnected(self, client: BleakClient) -> None:
         """Disconnected callback."""
         if self._expected_disconnect:
             _LOGGER.debug(
