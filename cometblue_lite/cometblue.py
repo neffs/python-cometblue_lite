@@ -11,13 +11,10 @@ import asyncio
 import logging
 import struct
 
-from bleak import BleakError, BleakScanner
+from bleak import BleakError
+from bleak import BleakClient
 from bleak.backends.device import BLEDevice
-from bleak.backends.service import BleakGATTCharacteristic, BleakGATTServiceCollection
-from bleak_retry_connector import (
-    BleakClient,
-    establish_connection,
-)
+from bleak_retry_connector import establish_connection
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -79,7 +76,12 @@ class CometBlueStates:
         self._status = dict()
         self._battery_level = None
         self._current_temp = None
-        self.clear_temperatures()
+        self.target_temperature = None
+        self.target_temp_l = None
+        self.target_temp_h = None
+        self.offset_temperature = None
+        self.window_open_detection = None
+        self.window_open_minutes = None
 
     def clear_temperatures(self):
         self.target_temperature = None
@@ -167,7 +169,6 @@ class CometBlueStates:
     @status_code.setter
     def status_code(self, val):
         def decode_status(value):
-            state_bytes = struct.unpack(CometBlueStates._STATUS_STRUCT_PACKING, value)
             state_dword = struct.unpack('<I', value + b'\x00')[0]
 
             report = {}
@@ -251,9 +252,8 @@ class CometBlueStates:
 class CometBlue:
     """CometBlue Thermostat """
 
-    def __init__(self, address, pin):
+    def __init__(self, pin):
         super(CometBlue, self).__init__()
-        self._address = address
         self._device: BLEDevice | None = None
         self._pin = pin
         self.available = False
@@ -263,20 +263,17 @@ class CometBlue:
         self._connect_lock = asyncio.Lock()
         self._operation_lock = asyncio.Lock()
         self._client: BleakClient | None = None
-        self._cached_services: BleakGATTServiceCollection | None = None
-        self._read_char: BleakGATTCharacteristic | None = None
-        self._write_char: BleakGATTCharacteristic | None = None
         self._disconnect_timer: asyncio.TimerHandle | None = None
         self._expected_disconnect = False
-        self.loop = asyncio.get_event_loop()
+        self._loop = asyncio.get_event_loop()
         # btle.Debugging = True
 
-    async def _ensure_connected(self):
+    async def _ensure_connected(self, device: BLEDevice):
         """Ensure connection to device is established."""
         if self._connect_lock.locked():
             _LOGGER.debug(
                 "%s: Connection already in progress, waiting for it to complete;",
-                self._address,
+                device.address,
             )
         if self._client and self._client.is_connected:
             self._reset_disconnect_timer()
@@ -286,24 +283,15 @@ class CometBlue:
             if self._client and self._client.is_connected:
                 self._reset_disconnect_timer()
                 return
-            _LOGGER.debug("%s: Connecting; ", self._address)
-            if self._device is None:
-                self._device = await BleakScanner.find_device_by_address(self._address, 60.0)
-                if self._device is None:
-                    self._device = await BleakScanner.find_device_by_address(self._address, 60.0)
-                    if self._device is None:
-                        raise Exception("could not discover device")
-
-            client = await establish_connection(
+            _LOGGER.debug("%s: Connecting; ", device.address)
+            self._device = device
+            self._client = await establish_connection(
                 BleakClient,
                 self._device,
-                self._address,
-                self._disconnected,
-                cached_services=self._cached_services,
+                self._device.address,
+                self._disconnected
             )
-            self._cached_services = client.services
-            _LOGGER.debug("%s: Connected", self._address)
-            self._client = client
+            _LOGGER.debug("%s: Connected", self._device.address)
             # authenticate with PIN and initialize static values
             self._reset_disconnect_timer()
 
@@ -311,20 +299,20 @@ class CometBlue:
         try:
             await self._client.write_gatt_char(PASSWORD_CHAR, data, response=True)
         except BleakError:
-            _LOGGER.error("provided pin was not accepted by device %s" % client.address)
+            _LOGGER.error("provided pin was not accepted by device %s" % self._client.address)
 
-        _LOGGER.debug("Connected and authenticated with device %s", self._address)
+        _LOGGER.debug("Connected and authenticated with device %s", self._device.address)
 
-    def _disconnected(self, client: BleakClient) -> None:
+    def _disconnected(self, _: BleakClient) -> None:
         """Disconnected callback."""
         if self._expected_disconnect:
             _LOGGER.debug(
-                "%s: Disconnected from device;", self._address
+                "%s: Disconnected from device;", self._device.address
             )
             return
         _LOGGER.warning(
             "%s: Device unexpectedly disconnected",
-            self._address
+            self._device.address
         )
 
     def _reset_disconnect_timer(self):
@@ -332,7 +320,7 @@ class CometBlue:
         if self._disconnect_timer:
             self._disconnect_timer.cancel()
         self._expected_disconnect = False
-        self._disconnect_timer = self.loop.call_later(
+        self._disconnect_timer = self._loop.call_later(
             DISCONNECT_DELAY, self._disconnect
         )
 
@@ -476,13 +464,13 @@ class CometBlue:
         """Return True if device detected opened window"""
         return self._current.window_open
 
-    async def update(self):
+    async def update(self, device: BLEDevice):
         """Communicate with device, first try to write new values, then read from device"""
         current = self._current
         target = self._target
 
         # with self.btle_connection() as conn:
-        await self._ensure_connected()
+        await self._ensure_connected(device)
 
         conn = self._client
         device_infos = [
@@ -492,11 +480,11 @@ class CometBlue:
             current.software_rev
         ]
         if None in device_infos:
-            _LOGGER.debug("Fetching hardware information for device %s", self._address)
+            _LOGGER.debug("Fetching hardware information for device %s", self._device.address)
             current.model = (await conn.read_gatt_char(MODEL_CHAR)).decode()
             current.firmware_rev = (await conn.read_gatt_char(FIRMWARE_CHAR)).decode()
             current.manufacturer = (await conn.read_gatt_char(MANUFACTURER_CHAR)).decode()
-            current.software_rev = (await  conn.read_gatt_char(SOFTWARE_REV)).decode()
+            current.software_rev = (await conn.read_gatt_char(SOFTWARE_REV)).decode()
             _LOGGER.debug("Sucessfully fetched hardware information")
 
         if not target.all_temperatures_none:
@@ -504,17 +492,17 @@ class CometBlue:
                                        target.temperatures,
                                        response=True)
             target.clear_temperatures()
-            _LOGGER.debug("Successfully updated Temperatures for device %s", self._address)
+            _LOGGER.debug("Successfully updated Temperatures for device %s", self._device.address)
 
         if target.status_code is not None:
             await conn.write_gatt_char(STATUS_CHAR,
                                        target.status_code,
                                        response=True)
             target.status_code = None
-            _LOGGER.debug("Successfully updated status for device %s", self._address)
+            _LOGGER.debug("Successfully updated status for device %s", self._device.address)
 
         current.temperatures = await conn.read_gatt_char(TEMPERATURE_CHAR)
         current.status_code = await conn.read_gatt_char(STATUS_CHAR)
         current.battery_level = await conn.read_gatt_char(BATTERY_CHAR)
-        _LOGGER.debug("Successfully fetched new readings for device %s", self._address)
+        _LOGGER.debug("Successfully fetched new readings for device %s", self._device.address)
         self.available = True
