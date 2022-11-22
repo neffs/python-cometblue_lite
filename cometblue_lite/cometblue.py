@@ -7,36 +7,31 @@ Port to bleak/asyncio is based on pySwitchbot
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import struct
-import time
-from contextlib import contextmanager
 
-import asyncio
 from bleak import BleakError, BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.service import BleakGATTCharacteristic, BleakGATTServiceCollection
 from bleak_retry_connector import (
     BleakClient,
-    BleakNotFoundError,
-    ble_device_has_changed,
     establish_connection,
 )
 
 _LOGGER = logging.getLogger(__name__)
-
 
 PASSWORD_CHAR = "47e9ee30-47e9-11e4-8939-164230d1df67"
 TEMPERATURE_CHAR = "47e9ee2b-47e9-11e4-8939-164230d1df67"
 BATTERY_CHAR = "47e9ee2c-47e9-11e4-8939-164230d1df67"
 STATUS_CHAR = "47e9ee2a-47e9-11e4-8939-164230d1df67"
 DATETIME_CHAR = "47e9ee01-47e9-11e4-8939-164230d1df67"
-SOFTWARE_REV = "00002a28-0000-1000-8000-00805f9b34fb"       # software_revision (0.0.6-sygonix1)
-MODEL_CHAR = "00002a24-0000-1000-8000-00805f9b34fb"         # model_number (Comet Blue)
+SOFTWARE_REV = "00002a28-0000-1000-8000-00805f9b34fb"  # software_revision (0.0.6-sygonix1)
+MODEL_CHAR = "00002a24-0000-1000-8000-00805f9b34fb"  # model_number (Comet Blue)
 MANUFACTURER_CHAR = "00002a29-0000-1000-8000-00805f9b34fb"  # manufacturer_name (EUROtronic GmbH)
-#FIRMWARE_CHAR = "00002a26-0000-1000-8000-00805f9b34fb"
+# FIRMWARE_CHAR = "00002a26-0000-1000-8000-00805f9b34fb"
 
-FIRMWARE_CHAR = "47e9ee2d-47e9-11e4-8939-164230d1df67"      # firmware_revision2 (COBL0126)
+FIRMWARE_CHAR = "47e9ee2d-47e9-11e4-8939-164230d1df67"  # firmware_revision2 (COBL0126)
 _PIN_STRUCT_PACKING = '<I'
 _DATETIME_STRUCT_PACKING = '<BBBBB'
 _DAY_STRUCT_PACKING = '<BBBBBBBB'
@@ -57,7 +52,7 @@ def _encode_datetime(dt):
 
 class CometBlueStates:
     """CometBlue Thermostat States"""
-    TEMPERATURE_OFF = 7.5   # special temperature, valve fully closed
+    TEMPERATURE_OFF = 7.5  # special temperature, valve fully closed
     _TEMPERATURES_STRUCT_PACKING = '<bbbbbbb'
     _STATUS_STRUCT_PACKING = '<BBB'
 
@@ -247,10 +242,10 @@ class CometBlueStates:
     @property
     def all_temperatures_none(self):
         """True if any of the temperature properties is not None"""
-        values = set((self.target_temperature, self.target_temp_l, self.target_temp_h, self.offset_temperature, self.window_open_detection, self.window_open_minutes))
+        values = {self.target_temperature, self.target_temp_l, self.target_temp_h, self.offset_temperature, self.window_open_detection,
+                  self.window_open_minutes}
         values.remove(None)
         return len(values) == 0
-
 
 
 class CometBlue:
@@ -275,6 +270,7 @@ class CometBlue:
         self._expected_disconnect = False
         self.loop = asyncio.get_event_loop()
         # btle.Debugging = True
+
     async def _ensure_connected(self):
         """Ensure connection to device is established."""
         if self._connect_lock.locked():
@@ -291,7 +287,7 @@ class CometBlue:
                 self._reset_disconnect_timer()
                 return
             _LOGGER.debug("%s: Connecting; ", self._address)
-            if self._device is None: 
+            if self._device is None:
                 self._device = await BleakScanner.find_device_by_address(self._address, 60.0)
                 if self._device is None:
                     self._device = await BleakScanner.find_device_by_address(self._address, 60.0)
@@ -307,7 +303,6 @@ class CometBlue:
             )
             self._cached_services = client.services
             _LOGGER.debug("%s: Connected", self._address)
-            services = client.services
             self._client = client
             # authenticate with PIN and initialize static values
             self._reset_disconnect_timer()
@@ -320,7 +315,6 @@ class CometBlue:
 
         _LOGGER.debug("Connected and authenticated with device %s", self._address)
 
-
     def _disconnected(self, client: BleakClient) -> None:
         """Disconnected callback."""
         if self._expected_disconnect:
@@ -332,6 +326,7 @@ class CometBlue:
             "%s: Device unexpectedly disconnected",
             self._address
         )
+
     def _reset_disconnect_timer(self):
         """Reset disconnect timer."""
         if self._disconnect_timer:
@@ -357,7 +352,6 @@ class CometBlue:
             if client and client.is_connected:
                 await client.disconnect()
 
-    
     def should_update(self):
         """
         Signal necessity to call update() on next cycle because values need
@@ -487,7 +481,7 @@ class CometBlue:
         current = self._current
         target = self._target
 
-        #with self.btle_connection() as conn:
+        # with self.btle_connection() as conn:
         await self._ensure_connected()
 
         conn = self._client
@@ -507,15 +501,15 @@ class CometBlue:
 
         if not target.all_temperatures_none:
             await conn.write_gatt_char(TEMPERATURE_CHAR,
-                                        target.temperatures,
-                                        response=True)
+                                       target.temperatures,
+                                       response=True)
             target.clear_temperatures()
             _LOGGER.debug("Successfully updated Temperatures for device %s", self._address)
 
         if target.status_code is not None:
             await conn.write_gatt_char(STATUS_CHAR,
-                                        target.status_code,
-                                        response=True)
+                                       target.status_code,
+                                       response=True)
             target.status_code = None
             _LOGGER.debug("Successfully updated status for device %s", self._address)
 
@@ -524,4 +518,3 @@ class CometBlue:
         current.battery_level = await conn.read_gatt_char(BATTERY_CHAR)
         _LOGGER.debug("Successfully fetched new readings for device %s", self._address)
         self.available = True
-
