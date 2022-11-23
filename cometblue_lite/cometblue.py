@@ -273,6 +273,7 @@ class CometBlue:
         self._expected_disconnect = False
         self.loop = asyncio.get_event_loop()
         # btle.Debugging = True
+
     async def _ensure_connected(self):
         """Ensure connection to device is established."""
         if self._connect_lock.locked():
@@ -290,11 +291,12 @@ class CometBlue:
                 return
             _LOGGER.debug("%s: Connecting; ", self._address)
             if self._device is None: 
-                self._device = await BleakScanner.find_device_by_address(self._address, 60.0)
-                if self._device is None:
-                    self._device = await BleakScanner.find_device_by_address(self._address, 60.0)
-                    if self._device is None:
-                        raise Exception("could not discover device")
+                lstdev = await BleakScanner.discover(timeout=30.0)
+                for dev in lstdev:
+                    if dev.address == self._address:
+                        self._device = dev
+            if self._device is None:
+                raise Exception("could not discover device")
 
             client = await establish_connection(
                 BleakClientWithServiceCache,
@@ -522,4 +524,6 @@ class CometBlue:
         current.battery_level = await conn.read_gatt_char(BATTERY_CHAR)
         _LOGGER.debug("Successfully fetched new readings for device %s", self._address)
         self.available = True
+
+
 
