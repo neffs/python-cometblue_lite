@@ -3,10 +3,10 @@ from setuptools import setup
 
 setup(
     name='cometblue_lite',
-    version='0.5.3',
+    version='0.6.0',
     packages=['cometblue_lite'],
     python_requires='>=3.4',
-    install_requires=['bleak_retry_connector>=1.8.0', 'bleak>=0.15.1'],
+    install_requires=['bleak_retry_connector>=1.8.0', 'bleak>=0.17.0'],
     description='Module for Eurotronic Comet Blue thermostats',
     author='David Kreitschmann',
     maintainer='David Kreitschmann',
