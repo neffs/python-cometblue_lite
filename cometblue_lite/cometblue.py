@@ -254,11 +254,10 @@ class CometBlueStates:
 class CometBlue:
     """CometBlue Thermostat """
 
-    def __init__(self, address, pin, device_getter=None):
+    def __init__(self, address, pin):
         super(CometBlue, self).__init__()
         self._address = address
         self._device: BLEDevice | None = None
-        self._get_device = device_getter
         self._pin = pin
         self.available = False
         self._handles = dict()
@@ -274,8 +273,6 @@ class CometBlue:
         self._expected_disconnect = False
         self.loop = asyncio.get_event_loop()
         # btle.Debugging = True
-
-
     async def _ensure_connected(self):
         """Ensure connection to device is established."""
         if self._connect_lock.locked():
@@ -293,12 +290,9 @@ class CometBlue:
                 return
             _LOGGER.debug("%s: Connecting; ", self._address)
             if self._device is None: 
-                if self._get_device is None:
+                self._device = await BleakScanner.find_device_by_address(self._address, 60.0)
+                if self._device is None:
                     self._device = await BleakScanner.find_device_by_address(self._address, 60.0)
-                    if self._device is None:
-                        raise Exception("could not discover device")
-                else:
-                    self._device = self._get_device(self._address)
                     if self._device is None:
                         raise Exception("could not discover device")
 
